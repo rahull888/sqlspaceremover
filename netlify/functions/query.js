@@ -3,10 +3,15 @@
 // Protect POST writes by setting NETLIFY_SAVE_TOKEN in Netlify site environment variables.
 // GET is allowed publicly in this example (change as needed).
 
-const { getStore } = require('@netlify/blobs');
+// netlify/functions/query.js
+// Use dynamic import because @netlify/blobs is an ES module.
 
 exports.handler = async function(event, context) {
   try {
+    // dynamic import of ESM package
+    const blobs = await import('@netlify/blobs');
+    const { getStore } = blobs;
+
     const expected = process.env.NETLIFY_SAVE_TOKEN || '';
     const provided = (event.headers && (event.headers['x-admin-token'] || event.headers['X-Admin-Token'])) || '';
 
@@ -35,7 +40,7 @@ exports.handler = async function(event, context) {
 
     return { statusCode: 405, body: 'Method Not Allowed' };
   } catch (err) {
-    console.error(err);
+    console.error('Function error:', err);
     return { statusCode: 500, body: JSON.stringify({ error: String(err) }) };
   }
 };
