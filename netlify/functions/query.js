@@ -9,31 +9,60 @@
 
 // Robust loader for @netlify/blobs when module exports a `Blobs` object.
 
+// including when the package exports a Blobs class that must be `new`-ed.
+
 exports.handler = async function (event, context) {
   try {
     const blobsModule = await import('@netlify/blobs');
 
-    // Try several possible export shapes
-    // 1) top-level getStore
-    let getStore =
-      blobsModule.getStore ||
-      // 2) default.getStore
-      (blobsModule.default && blobsModule.default.getStore) ||
-      // 3) Blobs.getStore
-      (blobsModule.Blobs && blobsModule.Blobs.getStore) ||
-      // 4) Blobs.default.getStore
-      (blobsModule.Blobs && blobsModule.Blobs.default && blobsModule.Blobs.default.getStore);
+    // helper to try to extract getStore from an object
+    const findGetStore = (obj) => {
+      if (!obj) return null;
+      if (typeof obj.getStore === 'function') return obj.getStore;
+      if (obj.default && typeof obj.default.getStore === 'function') return obj.default.getStore;
+      return null;
+    };
 
-    // 5) some builds export a function as default which itself acts as getStore
+    // 1) direct named export getStore
+    let getStore = findGetStore(blobsModule);
+
+    // 2) try blobsModule.default if required
+    if (!getStore) getStore = findGetStore(blobsModule.default);
+
+    // 3) try Blobs export which might be a class or function
+    if (!getStore && blobsModule.Blobs) {
+      const Candidate = blobsModule.Blobs;
+      // If Blobs is a class/function that we can instantiate, try new
+      try {
+        const instance = new Candidate();
+        getStore = findGetStore(instance) || findGetStore(instance.default) || (typeof instance === 'function' ? instance : null);
+      } catch (e) {
+        // If `new Candidate()` failed, maybe Blobs is a factory function or exposes getStore on prototype
+        try {
+          // attempt to access prototype.getStore
+          if (Candidate.prototype && typeof Candidate.prototype.getStore === 'function') {
+            // bind to a dummy instance if needed
+            const dummy = Object.create(Candidate.prototype);
+            getStore = dummy.getStore;
+          }
+        } catch (ee) { /* ignore */ }
+      }
+    }
+
+    // 4) if default itself is a class/function
     if (!getStore && typeof blobsModule.default === 'function') {
-      getStore = blobsModule.default;
+      try {
+        const instance = new blobsModule.default();
+        getStore = findGetStore(instance) || (typeof instance === 'function' ? instance : null);
+      } catch (e) {
+        // fallback: maybe default itself is the getStore function
+        if (typeof blobsModule.default === 'function' && blobsModule.default.name && blobsModule.default.name.toLowerCase().includes('getstore')) {
+          getStore = blobsModule.default;
+        }
+      }
     }
 
-    // 6) sometimes Blobs is a function
-    if (!getStore && blobsModule.Blobs && typeof blobsModule.Blobs === 'function') {
-      getStore = blobsModule.Blobs;
-    }
-
+    // 5) final fallback: check top-level keys for anything helpful (for logs only)
     if (!getStore) {
       const keys = Object.keys(blobsModule).join(', ');
       throw new Error(`getStore not found in @netlify/blobs module. Exports: ${keys}`);
@@ -47,28 +76,50 @@ exports.handler = async function (event, context) {
       return { statusCode: 401, body: JSON.stringify({ error: 'Unauthorized' }) };
     }
 
-    const store = getStore('queries');
+    // Ensure getStore is a callable function; if it's a method on an instance that requires binding, handle it:
+    let storeFunc = getStore;
+    if (typeof getStore === 'function') {
+      // some getStore values are methods that expect `this` to be an instance; we attempt to bind if necessary.
+      // If getStore has no `this` dependency it will work as-is.
+      try {
+        // call getStore to obtain store object
+        const store = await (storeFunc('queries'));
+        // store should be an object with get/set methods
+        if (!store || typeof store.get !== 'function') {
+          throw new Error('Blobs store object invalid');
+        }
 
-    if (event.httpMethod === 'GET') {
-      const blob = await store.get('latest', { type: 'json' }).catch(() => null);
-      return {
-        statusCode: 200,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: (blob && blob.query) || '' })
-      };
+        if (event.httpMethod === 'GET') {
+          const blob = await store.get('latest', { type: 'json' }).catch(() => null);
+          return {
+            statusCode: 200,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: (blob && blob.query) || '' })
+          };
+        }
+
+        if (event.httpMethod === 'POST') {
+          const body = event.body ? JSON.parse(event.body) : {};
+          const queryText = body.query || '';
+          await store.setJSON('latest', { query: queryText, updatedAt: new Date().toISOString() });
+          return { statusCode: 200, body: JSON.stringify({ ok: true }) };
+        }
+
+        return { statusCode: 405, body: 'Method Not Allowed' };
+      } catch (err) {
+        // If direct calling failed, try alternative: if getStore is a method on an instance, attempt to locate instance.
+        // For safety, fall through to an explicit error below to capture a helpful message.
+        console.error('Attempt to call getStore failed:', err && err.stack ? err.stack : err);
+        throw err;
+      }
+    } else {
+      throw new Error('Resolved getStore is not a function');
     }
 
-    if (event.httpMethod === 'POST') {
-      const body = event.body ? JSON.parse(event.body) : {};
-      const queryText = body.query || '';
-      await store.setJSON('latest', { query: queryText, updatedAt: new Date().toISOString() });
-      return { statusCode: 200, body: JSON.stringify({ ok: true }) };
-    }
-
-    return { statusCode: 405, body: 'Method Not Allowed' };
   } catch (err) {
     console.error('Function error:', err && err.stack ? err.stack : err);
     return { statusCode: 500, body: JSON.stringify({ error: String(err) }) };
   }
 };
+
 
