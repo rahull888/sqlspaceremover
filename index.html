@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SQL Extra Space Remover</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; max-width:900px; margin:40px auto; padding:0 16px; color:#111; }
+    h1 { font-size:1.4rem; margin-bottom:.25rem; }
+    p { color:#444; margin-top:0; margin-bottom:18px; }
+    textarea { width:100%; min-height:220px; padding:12px; font-family: monospace; font-size:13px; box-sizing:border-box; }
+    .row { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
+    button { padding:8px 12px; border-radius:8px; border:1px solid #ccc; background:#f6f6f6; cursor:pointer; }
+    button:active{ transform:translateY(1px) }
+    .small { font-size:13px; color:#666; margin-top:8px; }
+    .output { white-space:pre-wrap; background:#fafafa; padding:12px; border:1px dashed #e0e0e0; margin-top:12px; font-family:monospace; min-height:60px; }
+    footer { margin-top:28px; color:#666; font-size:13px; }
+    #status { margin-left:6px; color:#2a6; font-size:13px; }
+  </style>
+</head>
+<body>
+  <h1>SQL Extra Space Remover</h1>
+  <p>Paste SQL or text below — this tool collapses repeated spaces/tabs/newlines into single spaces and trims ends. It also normalizes spaces around common SQL punctuation (comma, parentheses). Use the Save button to store the latest query (one slot) on the server.</p>
+
+  <textarea id="in" placeholder="Paste SQL here...">SELECT  *   FROM   customers  WHERE  name  =  'John   Doe'  ;</textarea>
+
+  <div class="row">
+    <button id="clean">Remove extra spaces</button>
+    <button id="preserve">Collapse but preserve inside quotes</button>
+    <button id="copy">Copy output</button>
+    <button id="save">Save current query</button>
+    <button id="load">Load saved query</button>
+    <div id="status" class="small"></div>
+  </div>
+
+  <div class="small">Tip: use "preserve" if you want to keep spaces inside string literals (e.g. 'John   Doe'). Saved query is stored in a single slot (replaced on each save).</div>
+
+  <div class="output" id="out"></div>
+
+  <footer>Made by Blue — title: <strong>sql extra space remover</strong></footer>
+
+  <script>
+    // collapse whitespace (simple): replace runs of whitespace with single space, trim ends,
+    // and clean up spaces before/after commas and parentheses.
+    function collapseSimple(s){
+      return s
+        .replace(/\s+/g, ' ')            // collapse all whitespace
+        .replace(/\s*,\s*/g, ', ')       // normalize commas to ", "
+        .replace(/\s*\(\s*/g, ' (')      // " (" before open paren
+        .replace(/\s*\)\s*/g, ') ')      // close paren then space
+        .replace(/\s*;\s*$/g, ';')       // semicolon at end
+        .trim();
+    }
+
+    // collapse while preserving text inside single or double quotes
+    function collapsePreserveQuotes(s){
+      // Split into segments outside/inside quotes
+      const parts = [];
+      let i = 0, N = s.length;
+      while(i < N){
+        if (s[i] === "'" || s[i] === '"'){
+          const quote = s[i];
+          let j = i+1;
+          while(j<N){
+            if (s[j] === '\\') { j+=2; continue; } // skip escaped
+            if (s[j] === quote) { j++; break; }
+            j++;
+          }
+          parts.push({t:'q', v:s.slice(i, j)}); // include quotes
+          i = j;
+        } else {
+          // outside quotes
+          let j = i;
+          while(j < N && s[j] !== "'" && s[j] !== '"') j++;
+          parts.push({t:'o', v:s.slice(i, j)});
+          i = j;
+        }
+      }
+      return parts.map(p => p.t==='o' ? collapseSimple(p.v) : p.v).join('').trim();
+    }
+
+    const inEl = document.getElementById('in');
+    const outEl = document.getElementById('out');
+    const statusEl = document.getElementById('status');
+
+    document.getElementById('clean').onclick = () => {
+      outEl.textContent = collapseSimple(inEl.value);
+      statusEl.textContent = '';
+    };
+    document.getElementById('preserve').onclick = () => {
+      outEl.textContent = collapsePreserveQuotes(inEl.value);
+      statusEl.textContent = '';
+    };
+    document.getElementById('copy').onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(outEl.textContent || '');
+        statusEl.style.color = '#2a6';
+        statusEl.textContent = 'Copied to clipboard';
+        setTimeout(()=> statusEl.textContent = '', 1600);
+      } catch(e){ statusEl.style.color = '#c33'; statusEl.textContent = 'Copy failed'; setTimeout(()=> statusEl.textContent = '', 2000); }
+    };
+
+    // --- Netlify function API helpers ---
+    async function apiFetch(method, body) {
+      // NOTE: do NOT put secrets here. If you protect POSTs with NETLIFY_SAVE_TOKEN,
+      // the token is stored server-side in Netlify environment variables.
+      const res = await fetch('/.netlify/functions/query', {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined
+      });
+      return res;
+    }
+
+    // Save: send the input to server to store as "latest"
+    document.getElementById('save').onclick = async () => {
+      const text = inEl.value || '';
+      statusEl.style.color = '#666';
+      statusEl.textContent = 'Saving...';
+      try {
+        const r = await apiFetch('POST', { query: text });
+        if (r.ok) { statusEl.style.color = '#2a6'; statusEl.textContent = 'Saved ✅ (replaces previous)'; }
+        else { statusEl.style.color = '#c33'; statusEl.textContent = 'Save failed: ' + r.status; }
+      } catch(e) { statusEl.style.color = '#c33'; statusEl.textContent = 'Save error'; console.error(e); }
+      setTimeout(()=> statusEl.textContent = '', 2200);
+    };
+
+    // Load: fetch saved query and put it back in textarea
+    document.getElementById('load').onclick = async () => {
+      statusEl.style.color = '#666';
+      statusEl.textContent = 'Loading...';
+      try {
+        const r = await apiFetch('GET');
+        if (r.ok) {
+          const data = await r.json();
+          inEl.value = data.query || '';
+          document.getElementById('preserve').click();
+          statusEl.style.color = '#2a6';
+          statusEl.textContent = 'Loaded ✅';
+        } else {
+          statusEl.style.color = '#c33';
+          statusEl.textContent = 'Load failed: ' + r.status;
+        }
+      } catch(e) { statusEl.style.color = '#c33'; statusEl.textContent = 'Load error'; console.error(e); }
+      setTimeout(()=> statusEl.textContent = '', 2200);
+    };
+
+    // Auto-load saved query on page load (optional, silent)
+    (async ()=> {
+      try {
+        const r = await apiFetch('GET');
+        if (r.ok) {
+          const data = await r.json();
+          if (data.query) {
+            inEl.value = data.query;
+            document.getElementById('preserve').click();
+            // small non-intrusive status
+            statusEl.style.color = '#2a6';
+            statusEl.textContent = 'Loaded saved query';
+            setTimeout(()=> statusEl.textContent = '', 1600);
+          }
+        }
+      } catch(e){}
+    })();
+  </script>
+</body>
+</html>
