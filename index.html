@@ -5,163 +5,189 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>SQL Extra Space Remover</title>
   <style>
-    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; max-width:900px; margin:40px auto; padding:0 16px; color:#111; }
-    h1 { font-size:1.4rem; margin-bottom:.25rem; }
-    p { color:#444; margin-top:0; margin-bottom:18px; }
-    textarea { width:100%; min-height:220px; padding:12px; font-family: monospace; font-size:13px; box-sizing:border-box; }
-    .row { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
-    button { padding:8px 12px; border-radius:8px; border:1px solid #ccc; background:#f6f6f6; cursor:pointer; }
-    button:active{ transform:translateY(1px) }
-    .small { font-size:13px; color:#666; margin-top:8px; }
-    .output { white-space:pre-wrap; background:#fafafa; padding:12px; border:1px dashed #e0e0e0; margin-top:12px; font-family:monospace; min-height:60px; }
-    footer { margin-top:28px; color:#666; font-size:13px; }
-    #status { margin-left:6px; color:#2a6; font-size:13px; }
+    :root { --maxw:900px; --pad:16px; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; max-width:var(--maxw); margin:36px auto; padding:0 var(--pad); color:#111; }
+    h1 { margin:0 0 6px 0; font-size:1.4rem; }
+    p { margin:0 0 14px 0; color:#444; }
+    textarea { width:100%; min-height:220px; padding:12px; font-family: monospace; font-size:13px; box-sizing:border-box; border-radius:8px; border:1px solid #e6e6e6; resize:vertical; }
+    .controls { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+    button { padding:8px 12px; border-radius:8px; border:1px solid #ccc; background:#f6f6f6; cursor:pointer; min-width:120px; }
+    button.secondary { background:#fff; }
+    label.small { font-size:13px; color:#666; display:flex; align-items:center; gap:8px; }
+    .meta { margin-top:8px; color:#666; font-size:13px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    .output { white-space:pre-wrap; background:#fafafa; padding:12px; border:1px dashed #e0e0e0; margin-top:12px; font-family:monospace; border-radius:8px; min-height:80px; }
+    footer { margin-top:22px; color:#666; font-size:13px; }
+    .toast { position:fixed; right:20px; bottom:20px; background:#111; color:#fff; padding:10px 14px; border-radius:8px; opacity:0; transform:translateY(6px); transition:opacity .22s, transform .22s; pointer-events:none; }
+    .toast.show { opacity:1; transform:translateY(0); pointer-events:auto; }
+    .spinner { display:inline-block; width:16px; height:16px; border:2px solid rgba(0,0,0,0.15); border-top-color:#333; border-radius:50%; animation:spin .8s linear infinite; vertical-align:middle; margin-left:6px; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .flex-between { display:flex; justify-content:space-between; gap:12px; align-items:center; flex-wrap:wrap; }
   </style>
 </head>
 <body>
   <h1>SQL Extra Space Remover</h1>
-  <p>Paste SQL or text below — this tool collapses repeated spaces/tabs/newlines into single spaces and trims ends. It also normalizes spaces around common SQL punctuation (comma, parentheses). Use the Save button to store the latest query (one slot) on the server.</p>
+  <p>Paste SQL or text — collapse repeated spaces/tabs/newlines into single spaces. Optionally save cleaned + original to a Google Sheet (opt-in).</p>
 
-  <textarea id="in" placeholder="Paste SQL here...">SELECT  *   FROM   customers  WHERE  name  =  'John   Doe'  ;</textarea>
+  <textarea id="in" placeholder="Paste SQL / procedure here...">SELECT  *   FROM   customers  WHERE  name  =  'John   Doe'  ;</textarea>
 
-  <div class="row">
+  <div class="controls">
     <button id="clean">Remove extra spaces</button>
-    <button id="preserve">Collapse but preserve inside quotes</button>
+    <button id="preserve">Collapse (preserve inside quotes)</button>
     <button id="copy">Copy output</button>
-    <button id="save">Save current query</button>
-    <button id="load">Load saved query</button>
-    <div id="status" class="small"></div>
+    <button id="clear" class="secondary">Clear input</button>
+
+    <label class="small" style="margin-left:8px;">
+      <input type="checkbox" id="saveToSheet" style="transform:scale(1.05)"/>
+      Save to Google Sheet (opt-in)
+    </label>
   </div>
 
-  <div class="small">Tip: use "preserve" if you want to keep spaces inside string literals (e.g. 'John   Doe'). Saved query is stored in a single slot (replaced on each save).</div>
+  <div class="meta">
+    <div class="small">Tip: Use "preserve" to keep spaces inside string literals (e.g. 'John   Doe').</div>
+    <div id="status" style="font-size:13px;color:#666"></div>
+  </div>
 
-  <div class="output" id="out"></div>
+  <div class="output" id="out" aria-live="polite"></div>
 
   <footer>Made by Blue — title: <strong>sql extra space remover</strong></footer>
 
+  <div id="toast" class="toast"></div>
+
   <script>
-    // collapse whitespace (simple): replace runs of whitespace with single space, trim ends,
-    // and clean up spaces before/after commas and parentheses.
+    // ----- CONFIG: replace with your Apps Script web app URL -----
+    const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwjFug3Ec7DVn4DME5DqKyLKaGW-JWQrkoSPhPMSYug3eHChHfNhhKKDPm0lsck3-2Cng/exec"; // <- replace me
+    const WRITE_TOKEN = "535a437e64979f710a8e25fa2fa9a9055a0bc7d4ae077e0819c45c58cc0d3dde"; // <- optional: set same token in Apps Script for basic auth
+
+    // ----- helpers: whitespace collapse functions -----
     function collapseSimple(s){
+      // collapse all whitespace to single spaces, normalize some punctuation spacing, trim ends
       return s
-        .replace(/\s+/g, ' ')            // collapse all whitespace
-        .replace(/\s*,\s*/g, ', ')       // normalize commas to ", "
-        .replace(/\s*\(\s*/g, ' (')      // " (" before open paren
-        .replace(/\s*\)\s*/g, ') ')      // close paren then space
-        .replace(/\s*;\s*$/g, ';')       // semicolon at end
+        .replace(/\s+/g, ' ')
+        .replace(/\s*,\s*/g, ', ')
+        .replace(/\s*\(\s*/g, ' (')
+        .replace(/\s*\)\s*/g, ') ')
+        .replace(/\s*;\s*$/g, ';')
         .trim();
     }
 
-    // collapse while preserving text inside single or double quotes
     function collapsePreserveQuotes(s){
-      // Split into segments outside/inside quotes
+      // Split into segments outside/inside quotes and collapse only outside segments
       const parts = [];
       let i = 0, N = s.length;
       while(i < N){
         if (s[i] === "'" || s[i] === '"'){
           const quote = s[i];
           let j = i+1;
-          while(j<N){
-            if (s[j] === '\\') { j+=2; continue; } // skip escaped
+          while(j < N){
+            if (s[j] === '\\') { j += 2; continue; } // skip escaped
             if (s[j] === quote) { j++; break; }
             j++;
           }
-          parts.push({t:'q', v:s.slice(i, j)}); // include quotes
+          parts.push({t:'q', v:s.slice(i, j)});
           i = j;
         } else {
-          // outside quotes
           let j = i;
           while(j < N && s[j] !== "'" && s[j] !== '"') j++;
           parts.push({t:'o', v:s.slice(i, j)});
           i = j;
         }
       }
-      return parts.map(p => p.t==='o' ? collapseSimple(p.v) : p.v).join('').trim();
+      return parts.map(p => p.t === 'o' ? collapseSimple(p.v) : p.v).join('').trim();
     }
 
+    // ----- DOM refs -----
     const inEl = document.getElementById('in');
     const outEl = document.getElementById('out');
+    const saveCheckbox = document.getElementById('saveToSheet');
     const statusEl = document.getElementById('status');
+    const toastEl = document.getElementById('toast');
 
-    document.getElementById('clean').onclick = () => {
-      outEl.textContent = collapseSimple(inEl.value);
-      statusEl.textContent = '';
-    };
-    document.getElementById('preserve').onclick = () => {
-      outEl.textContent = collapsePreserveQuotes(inEl.value);
-      statusEl.textContent = '';
-    };
-    document.getElementById('copy').onclick = async () => {
-      try {
-        await navigator.clipboard.writeText(outEl.textContent || '');
-        statusEl.style.color = '#2a6';
-        statusEl.textContent = 'Copied to clipboard';
-        setTimeout(()=> statusEl.textContent = '', 1600);
-      } catch(e){ statusEl.style.color = '#c33'; statusEl.textContent = 'Copy failed'; setTimeout(()=> statusEl.textContent = '', 2000); }
-    };
-
-    // --- Netlify function API helpers ---
-    async function apiFetch(method, body) {
-      // NOTE: do NOT put secrets here. If you protect POSTs with NETLIFY_SAVE_TOKEN,
-      // the token is stored server-side in Netlify environment variables.
-      const res = await fetch('/.netlify/functions/query', {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: body ? JSON.stringify(body) : undefined
-      });
-      return res;
+    function showToast(msg, timeout = 2600){
+      toastEl.textContent = msg;
+      toastEl.classList.add('show');
+      setTimeout(()=> toastEl.classList.remove('show'), timeout);
     }
 
-    // Save: send the input to server to store as "latest"
-    document.getElementById('save').onclick = async () => {
-      const text = inEl.value || '';
-      statusEl.style.color = '#666';
-      statusEl.textContent = 'Saving...';
+    // send to Google Sheet (Apps Script) — returns true/false
+    async function sendToSheet(cleaned, original){
+      if (!WEB_APP_URL || WEB_APP_URL.includes('AKfy...')) {
+        console.warn('WEB_APP_URL not configured; skipping save.');
+        return false;
+      }
       try {
-        const r = await apiFetch('POST', { query: text });
-        if (r.ok) { statusEl.style.color = '#2a6'; statusEl.textContent = 'Saved ✅ (replaces previous)'; }
-        else { statusEl.style.color = '#c33'; statusEl.textContent = 'Save failed: ' + r.status; }
-      } catch(e) { statusEl.style.color = '#c33'; statusEl.textContent = 'Save error'; console.error(e); }
-      setTimeout(()=> statusEl.textContent = '', 2200);
-    };
+        statusEl.innerHTML = 'Saving <span class="spinner" aria-hidden="true"></span>';
+        const body = { cleaned: cleaned, original: original };
+        if (WRITE_TOKEN) body.token = WRITE_TOKEN;
 
-    // Load: fetch saved query and put it back in textarea
-    document.getElementById('load').onclick = async () => {
-      statusEl.style.color = '#666';
-      statusEl.textContent = 'Loading...';
-      try {
-        const r = await apiFetch('GET');
-        if (r.ok) {
-          const data = await r.json();
-          inEl.value = data.query || '';
-          document.getElementById('preserve').click();
-          statusEl.style.color = '#2a6';
-          statusEl.textContent = 'Loaded ✅';
+        // include userAgent as query param (Apps Script can read e.parameter)
+        const url = WEB_APP_URL + `?_user_agent=${encodeURIComponent(navigator.userAgent || '')}`;
+
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body),
+          mode: 'cors'
+        });
+
+        const text = await resp.text();
+        // try parse JSON, but be tolerant
+        let j = null;
+        try { j = JSON.parse(text || '{}'); } catch (e) { j = null; }
+
+        statusEl.textContent = '';
+        if (resp.ok && j && j.status === 'ok') {
+          showToast('Saved to Google Sheet');
+          return true;
         } else {
-          statusEl.style.color = '#c33';
-          statusEl.textContent = 'Load failed: ' + r.status;
+          console.warn('Save failed', resp.status, text);
+          showToast('Save failed');
+          return false;
         }
-      } catch(e) { statusEl.style.color = '#c33'; statusEl.textContent = 'Load error'; console.error(e); }
-      setTimeout(()=> statusEl.textContent = '', 2200);
+      } catch (e) {
+        console.error('sendToSheet error', e);
+        statusEl.textContent = '';
+        showToast('Save error');
+        return false;
+      }
+    }
+
+    // ----- button handlers -----
+    document.getElementById('clean').onclick = async () => {
+      const cleaned = collapseSimple(inEl.value || '');
+      outEl.textContent = cleaned;
+      if (saveCheckbox.checked) {
+        // do not block UI — but await to show toast/status
+        await sendToSheet(cleaned, inEl.value || '');
+      }
     };
 
-    // Auto-load saved query on page load (optional, silent)
-    (async ()=> {
+    document.getElementById('preserve').onclick = async () => {
+      const cleaned = collapsePreserveQuotes(inEl.value || '');
+      outEl.textContent = cleaned;
+      if (saveCheckbox.checked) {
+        await sendToSheet(cleaned, inEl.value || '');
+      }
+    };
+
+    document.getElementById('copy').onclick = async () => {
       try {
-        const r = await apiFetch('GET');
-        if (r.ok) {
-          const data = await r.json();
-          if (data.query) {
-            inEl.value = data.query;
-            document.getElementById('preserve').click();
-            // small non-intrusive status
-            statusEl.style.color = '#2a6';
-            statusEl.textContent = 'Loaded saved query';
-            setTimeout(()=> statusEl.textContent = '', 1600);
-          }
-        }
-      } catch(e){}
-    })();
+        const text = outEl.textContent || '';
+        if (!text) { showToast('Nothing to copy'); return; }
+        await navigator.clipboard.writeText(text);
+        showToast('Copied to clipboard');
+      } catch (e) {
+        // fallback: select and let user copy manually
+        showToast('Copy failed — select and copy manually');
+      }
+    };
+
+    document.getElementById('clear').onclick = () => {
+      inEl.value = '';
+      outEl.textContent = '';
+    };
+
+    // initial populate
+    outEl.textContent = collapsePreserveQuotes(inEl.value || '');
   </script>
 </body>
 </html>
