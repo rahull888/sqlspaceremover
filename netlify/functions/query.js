@@ -11,43 +11,59 @@
 
 // including when the package exports a Blobs class that must be `new`-ed.
 
-exports.handler = async function (event, context) {
+// netlify/functions/query.js
+exports.handler = async function(event) {
+  const API_KEY = process.env.AIRTABLE_API_KEY;
+  const BASE_ID = process.env.AIRTABLE_BASE_ID;
+  const TABLE = process.env.AIRTABLE_TABLE_NAME || 'Queries';
+  const baseUrl = `https://api.airtable.com/v0/${BASE_ID}/${encodeURIComponent(TABLE)}`;
+  const authHeader = { Authorization: `Bearer ${API_KEY}` };
+
   try {
-    const blobsModule = await import('@netlify/blobs');
+    async function findLatestRecord() {
+      const url = `${baseUrl}?filterByFormula=${encodeURIComponent(`{Name} = "latest"`)}&pageSize=1`;
+      const res = await fetch(url, { headers: { ...authHeader } });
+      const data = await res.json();
+      return (data.records && data.records[0]) || null;
+    }
 
-    // helper to try to extract getStore from an object
-    const findGetStore = (obj) => {
-      if (!obj) return null;
-      if (typeof obj.getStore === 'function') return obj.getStore;
-      if (obj.default && typeof obj.default.getStore === 'function') return obj.default.getStore;
-      return null;
-    };
+    if (event.httpMethod === 'GET') {
+      const rec = await findLatestRecord();
+      const query = rec && rec.fields && rec.fields.query ? rec.fields.query : '';
+      return { statusCode: 200, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query }) };
+    }
 
-    // 1) direct named export getStore
-    let getStore = findGetStore(blobsModule);
+    if (event.httpMethod === 'POST') {
+      const body = event.body ? JSON.parse(event.body) : {};
+      const queryText = body.query || '';
+      const existing = await findLatestRecord();
 
-    // 2) try blobsModule.default if required
-    if (!getStore) getStore = findGetStore(blobsModule.default);
-
-    // 3) try Blobs export which might be a class or function
-    if (!getStore && blobsModule.Blobs) {
-      const Candidate = blobsModule.Blobs;
-      // If Blobs is a class/function that we can instantiate, try new
-      try {
-        const instance = new Candidate();
-        getStore = findGetStore(instance) || findGetStore(instance.default) || (typeof instance === 'function' ? instance : null);
-      } catch (e) {
-        // If `new Candidate()` failed, maybe Blobs is a factory function or exposes getStore on prototype
-        try {
-          // attempt to access prototype.getStore
-          if (Candidate.prototype && typeof Candidate.prototype.getStore === 'function') {
-            // bind to a dummy instance if needed
-            const dummy = Object.create(Candidate.prototype);
-            getStore = dummy.getStore;
-          }
-        } catch (ee) { /* ignore */ }
+      if (existing) {
+        const patchRes = await fetch(`${baseUrl}/${existing.id}`, {
+          method: 'PATCH',
+          headers: { ...authHeader, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fields: { query: queryText } })
+        });
+        const patched = await patchRes.json();
+        return { statusCode: 200, body: JSON.stringify({ ok: true, id: patched.id }) };
+      } else {
+        const postRes = await fetch(baseUrl, {
+          method: 'POST',
+          headers: { ...authHeader, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fields: { Name: 'latest', query: queryText } })
+        });
+        const created = await postRes.json();
+        return { statusCode: 200, body: JSON.stringify({ ok: true, id: created.id }) };
       }
     }
+
+    return { statusCode: 405, body: 'Method Not Allowed' };
+  } catch (err) {
+    console.error('Airtable function error:', err);
+    return { statusCode: 500, body: JSON.stringify({ error: String(err) }) };
+  }
+};
+
 
     // 4) if default itself is a class/function
     if (!getStore && typeof blobsModule.default === 'function') {
