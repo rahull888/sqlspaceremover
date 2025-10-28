@@ -1,96 +1,46 @@
-// netlify/functions/query.js
-// Netlify Function: stores a single 'latest' query in Netlify Blobs store named 'queries'.
-// Protect POST writes by setting NETLIFY_SAVE_TOKEN in Netlify site environment variables.
-// GET is allowed publicly in this example (change as needed).
+<script>
+  const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwjFug3Ec7DVn4DME5DqKyLKaGW-JWQrkoSPhPMSYug3eHChHfNhhKKDPm0lsck3-2Cng/exec"; // <- replace
+  const WRITE_TOKEN = "535a437e64979f710a8e25fa2fa9a9055a0bc7d4ae077e0819c45c58cc0d3dde"; // <- if you configured token in Apps Script
 
-// netlify/functions/query.js
-// Use dynamic import because @netlify/blobs is an ES module.
-// Robust dynamic import for @netlify/blobs (handles multiple export shapes)
+  async function sendToSheet(cleaned, original){
+    try {
+      const body = { cleaned: cleaned, original: original };
+      if (WRITE_TOKEN) body.token = WRITE_TOKEN;
 
-// Robust loader for @netlify/blobs when module exports a `Blobs` object.
+      // add optional client metadata as query params (Apps Script can read e.parameter)
+      const url = WEB_APP_URL + `?_user_agent=${encodeURIComponent(navigator.userAgent || '')}`;
 
-// including when the package exports a Blobs class that must be `new`-ed.
-
-// netlify/functions/query.js
-// Airtable-backed store — now 100% valid CommonJS async usage (no top-level await)
-
-exports.handler = async function (event) {
-  const API_KEY = process.env.AIRTABLE_API_KEY;
-  const BASE_ID = process.env.AIRTABLE_BASE_ID;
-  const TABLE = process.env.AIRTABLE_TABLE_NAME || 'Queries';
-
-  if (!API_KEY || !BASE_ID) {
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ error: 'Airtable credentials not set in environment variables' }),
-    };
-  }
-
-  const baseUrl = `https://api.airtable.com/v0/${BASE_ID}/${encodeURIComponent(TABLE)}`;
-  const authHeader = { Authorization: `Bearer ${API_KEY}` };
-
-  // helper functions (all async-safe)
-  async function findLatestRecord() {
-    const url = `${baseUrl}?filterByFormula=${encodeURIComponent(`{Name} = "latest"`)}&pageSize=1`;
-    const res = await fetch(url, { headers: authHeader });
-    if (!res.ok) {
-      throw new Error(`Airtable find error: ${res.status}`);
-    }
-    const data = await res.json();
-    return (data.records && data.records[0]) || null;
-  }
-
-  async function updateRecord(recordId, queryText) {
-    const res = await fetch(`${baseUrl}/${recordId}`, {
-      method: 'PATCH',
-      headers: { ...authHeader, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fields: { query: queryText } }),
-    });
-    if (!res.ok) throw new Error(`Airtable patch error: ${res.status}`);
-    return res.json();
-  }
-
-  async function createRecord(queryText) {
-    const res = await fetch(baseUrl, {
-      method: 'POST',
-      headers: { ...authHeader, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fields: { Name: 'latest', query: queryText } }),
-    });
-    if (!res.ok) throw new Error(`Airtable create error: ${res.status}`);
-    return res.json();
-  }
-
-  try {
-    if (event.httpMethod === 'GET') {
-      const record = await findLatestRecord();
-      const query = record?.fields?.query || '';
-      return {
-        statusCode: 200,
+      const resp = await fetch(url, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query }),
-      };
-    }
+        body: JSON.stringify(body)
+      });
 
-    if (event.httpMethod === 'POST') {
-      const body = event.body ? JSON.parse(event.body) : {};
-      const queryText = body.query || '';
-
-      const record = await findLatestRecord();
-      if (record) {
-        await updateRecord(record.id, queryText);
+      const j = await resp.json();
+      if (j && j.status === 'ok') {
+        console.log('Saved to sheet');
+        return true;
       } else {
-        await createRecord(queryText);
+        console.warn('Save failed', j);
+        return false;
       }
-
-      return {
-        statusCode: 200,
-        body: JSON.stringify({ ok: true }),
-      };
+    } catch (e) {
+      console.error('sendToSheet error', e);
+      return false;
     }
-
-    return { statusCode: 405, body: 'Method Not Allowed' };
-  } catch (err) {
-    console.error('Airtable function error:', err);
-    return { statusCode: 500, body: JSON.stringify({ error: String(err) }) };
   }
-};
+
+  // integrate with existing buttons
+  document.getElementById('clean').onclick = async () => {
+    const cleaned = collapseSimple(inEl.value || '');
+    outEl.textContent = cleaned;
+    // send to sheet but do not block UI
+    sendToSheet(cleaned, inEl.value);
+  };
+
+  document.getElementById('preserve').onclick = async () => {
+    const cleaned = collapsePreserveQuotes(inEl.value || '');
+    outEl.textContent = cleaned;
+    sendToSheet(cleaned, inEl.value);
+  };
+</script>
