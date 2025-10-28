@@ -26,7 +26,7 @@
 </head>
 <body>
   <h1>SQL Extra Space Remover</h1>
-  <p>Paste SQL or text — collapse repeated spaces/tabs/newlines into single spaces. Optionally save cleaned + original to a Google Sheet (opt-in).</p>
+  <p>Paste SQL or text — collapse repeated spaces/tabs/newlines into single spaces. Optionally save cleaned + original to a  Sheet (opt-in).</p>
 
   <textarea id="in" placeholder="Paste SQL / procedure here...">SELECT  *   FROM   customers  WHERE  name  =  'John   Doe'  ;</textarea>
 
@@ -38,7 +38,7 @@
 
     <label class="small" style="margin-left:8px;">
       <input type="checkbox" id="saveToSheet" style="transform:scale(1.05)"/>
-      Save to Google Sheet (opt-in)
+      Save to  Sheet (opt-in)
     </label>
   </div>
 
@@ -55,7 +55,7 @@
 
   <script>
     // ----- CONFIG: replace with your Apps Script web app URL -----
-    const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwjFug3Ec7DVn4DME5DqKyLKaGW-JWQrkoSPhPMSYug3eHChHfNhhKKDPm0lsck3-2Cng/exec"; // <- replace me
+    const WEB_APP_URL = "https://script..com/macros/s/AKfycbwjFug3Ec7DVn4DME5DqKyLKaGW-JWQrkoSPhPMSYug3eHChHfNhhKKDPm0lsck3-2Cng/exec"; // <- replace me
     const WRITE_TOKEN = "535a437e64979f710a8e25fa2fa9a9055a0bc7d4ae077e0819c45c58cc0d3dde"; // <- optional: set same token in Apps Script for basic auth
 
     // ----- helpers: whitespace collapse functions -----
@@ -108,7 +108,7 @@
       setTimeout(()=> toastEl.classList.remove('show'), timeout);
     }
 
-    // send to Google Sheet (Apps Script) — returns true/false
+    // send to  Sheet (Apps Script) — returns true/false
     async function sendToSheet(cleaned, original){
       if (!WEB_APP_URL || WEB_APP_URL.includes('AKfy...')) {
         console.warn('WEB_APP_URL not configured; skipping save.');
@@ -136,7 +136,7 @@
 
         statusEl.textContent = '';
         if (resp.ok && j && j.status === 'ok') {
-          showToast('Saved to Google Sheet');
+          showToast('Saved to  Sheet');
           return true;
         } else {
           console.warn('Save failed', resp.status, text);
