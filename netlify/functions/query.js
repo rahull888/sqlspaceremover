@@ -7,19 +7,34 @@
 // Use dynamic import because @netlify/blobs is an ES module.
 // Robust dynamic import for @netlify/blobs (handles multiple export shapes)
 
+// Robust loader for @netlify/blobs when module exports a `Blobs` object.
+
 exports.handler = async function (event, context) {
   try {
     const blobsModule = await import('@netlify/blobs');
-    // resolve getStore from possible shapes:
-    let getStore = blobsModule.getStore || (blobsModule.default && blobsModule.default.getStore);
 
-    // also handle case where default itself is getStore (some builds export default function)
+    // Try several possible export shapes
+    // 1) top-level getStore
+    let getStore =
+      blobsModule.getStore ||
+      // 2) default.getStore
+      (blobsModule.default && blobsModule.default.getStore) ||
+      // 3) Blobs.getStore
+      (blobsModule.Blobs && blobsModule.Blobs.getStore) ||
+      // 4) Blobs.default.getStore
+      (blobsModule.Blobs && blobsModule.Blobs.default && blobsModule.Blobs.default.getStore);
+
+    // 5) some builds export a function as default which itself acts as getStore
     if (!getStore && typeof blobsModule.default === 'function') {
       getStore = blobsModule.default;
     }
 
+    // 6) sometimes Blobs is a function
+    if (!getStore && blobsModule.Blobs && typeof blobsModule.Blobs === 'function') {
+      getStore = blobsModule.Blobs;
+    }
+
     if (!getStore) {
-      // helpful debugging message in logs
       const keys = Object.keys(blobsModule).join(', ');
       throw new Error(`getStore not found in @netlify/blobs module. Exports: ${keys}`);
     }
@@ -56,3 +71,4 @@ exports.handler = async function (event, context) {
     return { statusCode: 500, body: JSON.stringify({ error: String(err) }) };
   }
 };
+
